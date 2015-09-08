@@ -7,6 +7,7 @@ __license__ = 'BSD'
 
 from time import time
 import threading
+import json
 
 
 class cached_property(object):
@@ -60,13 +61,15 @@ class cached_property_with_ttl(object):
     the property will last before being timed out.
     """
 
-    def __init__(self, ttl=None):
+    def __init__(self, ttl=None, store=None):
         if callable(ttl):
             func = ttl
             ttl = None
         else:
             func = None
         self.ttl = ttl
+        self.store = local_store(store)
+
         self._prepare_func(func)
 
     def __call__(self, func):
@@ -78,10 +81,12 @@ class cached_property_with_ttl(object):
             return self
 
         now = time()
-        obj_dict = obj.__dict__
         name = self.__name__
+        obj_dict = obj.__dict__
         try:
-            value, last_updated = obj_dict[name]
+            value, last_updated = self.store.load_store(name)
+            if not last_updated:
+                value, last_updated = obj_dict[name]
         except KeyError:
             pass
         else:
@@ -90,14 +95,20 @@ class cached_property_with_ttl(object):
                 return value
 
         value = self.func(obj)
-        obj_dict[name] = (value, now)
+        value_t = (value, now)
+        obj_dict[name] = value_t
+        self.store.update_store(value_t, name)
+
         return value
 
     def __delete__(self, obj):
         obj.__dict__.pop(self.__name__, None)
+        self.store.update_store(None, self.__name__)
 
     def __set__(self, obj, value):
-        obj.__dict__[self.__name__] = (value, time())
+        value_t = (value, time())
+        obj.__dict__[self.__name__] = value_t
+        self.store.update_store(value_t, self.__name__)
 
     def _prepare_func(self, func):
         self.func = func
@@ -117,8 +128,8 @@ class threaded_cached_property_with_ttl(cached_property_with_ttl):
     might concurrently try to access the property.
     """
 
-    def __init__(self, ttl=None):
-        super(threaded_cached_property_with_ttl, self).__init__(ttl)
+    def __init__(self, ttl=None, store=None):
+        super(threaded_cached_property_with_ttl, self).__init__(ttl, store)
         self.lock = threading.RLock()
 
     def __get__(self, obj, cls):
@@ -129,3 +140,37 @@ class threaded_cached_property_with_ttl(cached_property_with_ttl):
 # Alias to make threaded_cached_property_with_ttl easier to use
 threaded_cached_property_ttl = threaded_cached_property_with_ttl
 timed_threaded_cached_property = threaded_cached_property_with_ttl
+
+class local_store(object):
+    """
+    Stores the given values in a file JSON format to provide caching accross
+    script runs (for example when a property contains some remote content)
+    """
+    def __init__(self, store):
+        self.store = store
+
+    def update_store(self, obj, name):
+        """Loads store if it exists and adds new property or
+           updates existing one with new value"""
+        if self.store:
+            data = {}
+            try:
+                with open(self.store, "r") as fp:
+                    data = json.load(fp)
+            except:
+                pass
+            with open(self.store, "w") as fp:
+                data[name] = (obj)
+                json.dump(data, fp)
+
+    def load_store(self, name):
+        """Loads cached value from the store"""
+        ret = (None, None)
+        if self.store:
+            try:
+                with open(self.store, "r") as fp:
+                    data = json.load(fp)
+                    ret = data[name]
+            except:
+                pass
+        return ret

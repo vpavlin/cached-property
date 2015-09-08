@@ -2,8 +2,10 @@
 
 import time
 import unittest
+import os
 from threading import Lock, Thread
 from freezegun import freeze_time
+from tempfile import mkdtemp
 
 import cached_property
 
@@ -193,6 +195,54 @@ class TestCachedPropertyWithTTL(TestCachedProperty):
 
     def test_threads_ttl_expiry(self):
         Check = CheckFactory(self.cached_property_factory(ttl=100000),
+                             threadsafe=True)
+        check = Check()
+        num_threads = 5
+
+        # Same as in test_threads
+        check.run_threads(num_threads)
+        self.assert_cached(check, num_threads)
+        self.assert_cached(check, num_threads)
+
+        # The cache expires in the future
+        with freeze_time("9999-01-01"):
+            check.run_threads(num_threads)
+            self.assert_cached(check, 2 * num_threads)
+            self.assert_cached(check, 2 * num_threads)
+
+        # Things are not reverted when we are back to the present
+        self.assert_cached(check, 2 * num_threads)
+        self.assert_cached(check, 2 * num_threads)
+
+
+class TestCachedPropertyWithTTLStore(TestCachedProperty):
+    """Tests for cached_property_with_ttl"""
+
+    cached_property_factory = cached_property.cached_property_with_ttl
+    store_dir = mkdtemp(prefix="cached_property-XXXXXX", dir="/tmp")
+
+    def test_ttl_expiry(self):
+        store_path = os.path.join(self.store_dir, "store.json")
+        Check = CheckFactory(self.cached_property_factory(ttl=100000, store=store_path))
+        check = Check()
+
+        # Run standard cache assertion
+        self.assert_cached(check, 1)
+        self.assert_cached(check, 1)
+
+        # The cache expires in the future
+        with freeze_time("9999-01-01"):
+            self.assert_cached(check, 2)
+            self.assert_cached(check, 2)
+
+        # Things are not reverted when we are back to the present
+        self.assert_cached(check, 2)
+        self.assert_cached(check, 2)
+
+
+    def test_threads_ttl_expiry(self):
+        store_path = os.path.join(self.store_dir, "store_thread.json")
+        Check = CheckFactory(self.cached_property_factory(ttl=100000, store=store_path),
                              threadsafe=True)
         check = Check()
         num_threads = 5
